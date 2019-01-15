@@ -2,7 +2,7 @@
 ## 概述
 公司使用了netty框架做了一个在线通讯的基础框架，客户需要在线同同事进行交流，在这里我通过原生NIO api做了一个简易的聊天框架。中间遇到了很多问题，好在最后都解决了。在这里做一次记录，望共勉。
 ## 调用图
-![在这里插入图片描述](https://img-blog.csdnimg.cn/20190115205433728.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3FxXzIyMjcxNDc5,size_16,color_FFFFFF,t_70)
+![在这里插入图片描述](img/结构图.jpg)
 **调用顺序**
 * **注意：Selector只能管理非阻塞的Channel**
 1. ServerSocketChannel开启Socket监听服务
@@ -373,8 +373,65 @@ public class ChatRoomClient {
 }
 
 ```
+### 循环利用Buffer讲解
+```java
+    /**
+     * 读客户端的消息
+     * 这里规定服务端发送给客户端的第一个字节是标识是否是自身发送的消息
+     * 1标识本人 0标识其他人
+     *
+     * @param client
+     * @return
+     * @throws IOException
+     */
+    public ByteBuffer receiveMsg(SocketChannel client) throws IOException {
+        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(128);
+        byteBuffer.put((byte) 0);
+        client.read(byteBuffer);
+        return byteBuffer;
+    }
+    
+/**
+     * 转发消息
+     * 标志位 1代表本人，0代表其他人
+     *
+     * @param client
+     * @param byteBuffer
+     * @throws IOException
+     */
+    public void dispatchMsg(SocketChannel client, ByteBuffer byteBuffer) throws IOException {
+        //不可被修改
+        Set<SelectionKey> keys = selector.keys();
+        //这里需要转换状态为读 position = 0，limit=message.length
+        byteBuffer.flip();
+        for (SelectionKey key : keys) {
+            SelectableChannel channel = key.channel();
+            //判断是不是SocketChannel，转发是针对客户端通道而言的
+            if (channel != null && channel instanceof SocketChannel) {
+                SocketChannel targetClient = (SocketChannel) channel;
+                //如果是本人，需要将第一位改为byte 0
+                //写消息 这时候position=0，limit=1+message.length
+                if (channel == client) {
+                    //标志位 1代表本人，0代表其他人 此时 position=1 limit=128
+                    byteBuffer.put(0, (byte) 1);
+                }else {
+                    byteBuffer.put(0, (byte) 0);
+                }
+                targetClient.write(byteBuffer);
+                //重复使用
+                byteBuffer.position(0);
+            }
+        }
+    }
+```
+**时序图**
+![在这里插入图片描述](img/时序图.jpg)
+首先我在这里规定buffer的第一个字节存放的是tag，00000001表示本人，00000000表示其他人，这样在客户端可以区分出本人和其他人的消息，通过人为设置position和恰当时机的flip，在重复调用的过程中，重复利用了这个DirectBuffer，从而提高了性能，减少了内存的开销。
+## 运行图片
+![在这里插入图片描述](img/server.png)
 
+![在这里插入图片描述](img/client1.png)
 
-
+![在这里插入图片描述](img/client2.png)
 ## 总结
 在写完这个简易的小东西后，更加深入理解了NIO的运行流程，和编码需要注意的一些问题，欢迎大家提问。
